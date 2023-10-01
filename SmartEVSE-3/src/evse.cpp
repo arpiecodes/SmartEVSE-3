@@ -122,6 +122,7 @@ int8_t InitialSoC = -1;                                                     // S
 int8_t FullSoC = -1;                                                        // SoC car considers itself fully charged
 int8_t ComputedSoC = -1;                                                    // Estimated SoC, based on charged kWh
 int8_t RemainingSoC = -1;                                                   // Remaining SoC, based on ComputedSoC
+int32_t TimeUntilFull = -1;                                                 // Remaining time until car reaches FullSoC, in seconds
 int32_t EnergyCapacity = -1;                                                // Car's total battery capacity
 int32_t EnergyRequest = -1;                                                 // Requested amount of energy by car
 char EVCCID[32];                                                            // Car's EVCCID (EV Communication Controller Identifer)
@@ -1555,31 +1556,56 @@ void printStatus(void)
 // Recompute State of Charge, in case we have a known initial state of charge
 // This function is called by kWh logic and after an EV state update through API, Serial or MQTT
 void RecomputeSoC(void) {
-    if (FullSoC > 0 && EnergyCapacity > 0) {
+    if (InitialSoC > 0 && FullSoC > 0 && EnergyCapacity > 0) {
         if (InitialSoC == FullSoC) {
             // We're already at full SoC
             ComputedSoC = FullSoC;
             RemainingSoC = 0;
-        } else if (EnergyRequest > 0 && EnergyCharged > 0) {
-            // Attempt to use EnergyRequest to determine SoC with greater accuracy
-            uint32_t RemainingEnergyWh = (EnergyCharged > 0 ? EnergyRequest - (EnergyCharged) : EnergyRequest);
-            if (RemainingEnergyWh > 0) {
-                ComputedSoC = FullSoC - (round(RemainingEnergyWh / EnergyCapacity) * FullSoC);
+            TimeUntilFull = 0;
+        } else {
+            int EnergyRemaining = -1;
+            int TargetEnergyCapacity = (FullSoC / 100.f) * EnergyCapacity;
+
+            if (EnergyRequest > 0) {
+                // Attempt to use EnergyRequest to determine SoC with greater accuracy
+                EnergyRemaining = EnergyCharged > 0 ? (EnergyRequest - EnergyCharged) : EnergyRequest;
             } else {
-                ComputedSoC = FullSoC;
+                // We use a rough estimation based on FullSoC and EnergyCapacity
+                EnergyRemaining = TargetEnergyCapacity - (EnergyCharged + (InitialSoC / 100.f) * EnergyCapacity);
             }
-        } else if (InitialSoC > 0) {
-            // Fall back to rough estimate based on InitialSoC if we do not know the requested energy
-            ComputedSoC = InitialSoC + (round(EnergyCharged / EnergyCapacity) * FullSoC);
-        }
 
-        // We can't possibly charge to over 100% SoC
-        if (ComputedSoC > FullSoC) {
-            ComputedSoC = FullSoC;
-            RemainingSoC = 0;
-        }
+            RemainingSoC = ((FullSoC * EnergyRemaining) / TargetEnergyCapacity) + 1;
+            ComputedSoC = RemainingSoC > 1 ? (FullSoC - RemainingSoC) : FullSoC;
 
-        RemainingSoC = FullSoC - ComputedSoC;
+            // Only attempt to compute the SoC and TimeUntilFull if we have a EnergyRemaining and PowerMeasured
+            if (EnergyRemaining > -1) {
+                int TimeToGo = -1;
+                // Do a very simple estimation in seconds until car would reach FullSoC according to current charging power
+                if (PowerMeasured > 0) {
+                    // Use real-time PowerMeasured data if available
+                    TimeToGo = (3600 * EnergyRemaining) / PowerMeasured;
+                } else if (Nr_Of_Phases_Charging > 0) {
+                    // Else, fall back on the theoretical maximum of the cable + nr of phases
+                    TimeToGo = (3600 * EnergyRemaining) / (MaxCapacity * (Nr_Of_Phases_Charging * 230));
+                }
+
+                // Wait until we have a somewhat sensible estimation while still respecting granny chargers
+                if (TimeToGo < 100000) {
+                    TimeUntilFull = TimeToGo;
+                }
+            }
+
+            // We can't possibly charge to over 100% SoC
+            if (ComputedSoC > FullSoC) {
+                ComputedSoC = FullSoC;
+                RemainingSoC = 0;
+                TimeUntilFull = 0;
+            }
+
+            _LOG_I("SoC: EnergyRemaining %i RemaningSoC %i EnergyRequest %i EnergyCharged %i EnergyCapacity %i ComputedSoC %i FullSoC %i TimeUntilFull %i TargetEnergyCapacity %i\n", EnergyRemaining, RemainingSoC, EnergyRequest, EnergyCharged, EnergyCapacity, ComputedSoC, FullSoC, TimeUntilFull, TargetEnergyCapacity);
+        }
+    } else {
+        if (TimeUntilFull != -1) TimeUntilFull = -1;
     }
     // There's also the possibility an external API/app is used for SoC info. In such case, we allow setting ComputedSoC directly.
 }
@@ -1594,6 +1620,7 @@ void DisconnectEvent(void){
     RemainingSoC = -1;
     ComputedSoC = -1;
     EnergyCapacity = -1;
+    TimeUntilFull = -1;
     strncpy(EVCCID, "", sizeof(EVCCID));
 }
 
@@ -2071,8 +2098,7 @@ void requestEnergyMeasurement(uint8_t Meter, uint8_t Address, bool Export) {
 //
 void Timer100ms(void * parameter) {
 
-unsigned int locktimer = 0, unlocktimer = 0, energytimer = 0;
-uint8_t PollEVNode = NR_EVSES;
+unsigned int locktimer = 0, unlocktimer = 0;
 
 
     while(1)  // infinite loop
@@ -2107,9 +2133,25 @@ uint8_t PollEVNode = NR_EVSES;
             }
         }
 
-       
+        // Pause the task for 100ms
+        vTaskDelay(100 / portTICK_PERIOD_MS);
 
-        // Every 2 seconds, request measurements from modbus meters
+    } //while(1) loop
+
+}
+
+// Task that handles the Cable Lock and modbus
+// 
+// called every 200ms
+//
+void Timer200ms(void * parameter) {
+unsigned int energytimer = 0;
+uint8_t PollEVNode = NR_EVSES;
+
+    while(1)  // infinite loop
+    {       
+
+        // Every 4 seconds, request measurements from modbus meters
         if (ModbusRequest) {
             switch (ModbusRequest++) {                                          // State
                 case 1:                                                         // PV kwh meter
@@ -2229,8 +2271,8 @@ uint8_t PollEVNode = NR_EVSES;
         }
 
 
-        // Pause the task for 100ms
-        vTaskDelay(100 / portTICK_PERIOD_MS);
+        // Pause the task for 200ms
+        vTaskDelay(200 / portTICK_PERIOD_MS);
 
     } //while(1) loop
 
@@ -2449,6 +2491,9 @@ void SetupMQTTClient() {
         announce("EV Computed SoC", "sensor");
         announce("EV Remaining SoC", "sensor");
 
+        optional_payload = jsna("device_class","duration") + jsna("unit_of_measurement","m") + jsna("value_template", R"({{ none if (value | int == -1) else (value | int / 60) | round }})");
+        announce("EV Time Until Full", "sensor");
+
         optional_payload = jsna("device_class","energy") + jsna("unit_of_measurement","Wh") + jsna("value_template", R"({{ none if (value | int == -1) else (value | int) }})");
         announce("EV Energy Capacity", "sensor");
         announce("EV Energy Request", "sensor");
@@ -2535,6 +2580,7 @@ void mqttPublishData() {
             MQTTclient.publish(MQTTprefix + "/EVFullSoC", String(FullSoC), true, 0);
             MQTTclient.publish(MQTTprefix + "/EVComputedSoC", String(ComputedSoC), true, 0);
             MQTTclient.publish(MQTTprefix + "/EVRemainingSoC", String(RemainingSoC), true, 0);
+            MQTTclient.publish(MQTTprefix + "/EVTimeUntilFull", String(TimeUntilFull), false, 0);
             MQTTclient.publish(MQTTprefix + "/EVEnergyCapacity", String(EnergyCapacity), true, 0);
             MQTTclient.publish(MQTTprefix + "/EVEnergyRequest", String(EnergyRequest), true, 0);
             MQTTclient.publish(MQTTprefix + "/EVCCID", String(EVCCID), true, 0);
@@ -3277,7 +3323,7 @@ void ConfigureModbusMode(uint8_t newmode) {
             if (newmode != 255) MBserver.end();
             _LOG_A("ConfigureModbusMode2 task free ram: %u\n", uxTaskGetStackHighWaterMark( NULL ));
 
-            MBclient.setTimeout(100);       // timeout 100ms
+            MBclient.setTimeout(250);       // timeout 250ms
             MBclient.onDataHandler(&MBhandleData);
             MBclient.onErrorHandler(&MBhandleError);
 
@@ -3749,6 +3795,7 @@ void StartwebServer(void) {
             doc["ev_state"]["energy_request"] = EnergyRequest > 0 ? round(EnergyRequest / 100)/10 : -1; //in kWh, precision 1 decimal
             doc["ev_state"]["computed_soc"] = ComputedSoC;
             doc["ev_state"]["evccid"] = EVCCID;
+            doc["ev_state"]["time_until_full"] = TimeUntilFull;
         }
 
 #ifdef MQTT
@@ -4547,9 +4594,19 @@ void setup() {
     xTaskCreate(
         Timer100ms,     // Function that should be called
         "Timer100ms",   // Name of the task (for debugging)
-        4608,           // Stack size (bytes)
+        5120,           // Stack size (bytes)
         NULL,           // Parameter to pass
-        3,              // Task priority - medium
+        4,              // Task priority - medium-high
+        NULL            // Task handle
+    );
+
+    // Create Task 200ms Timer
+    xTaskCreate(
+        Timer200ms,     // Function that should be called
+        "Timer200ms",   // Name of the task (for debugging)
+        5120,           // Stack size (bytes)
+        NULL,           // Parameter to pass
+        4,              // Task priority - medium-high
         NULL            // Task handle
     );
 
@@ -4569,7 +4626,7 @@ void setup() {
     WiFiSetup();
 
     // Set eModbus LogLevel to 1, to suppress possible E5 errors
-    MBUlogLvl = LOG_LEVEL_CRITICAL;
+    MBUlogLvl = LOG_LEVEL_DEBUG;
     ConfigureModbusMode(255);
   
     BacklightTimer = BACKLIGHT;
