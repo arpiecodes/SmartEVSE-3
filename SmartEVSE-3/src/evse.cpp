@@ -2098,8 +2098,7 @@ void requestEnergyMeasurement(uint8_t Meter, uint8_t Address, bool Export) {
 //
 void Timer100ms(void * parameter) {
 
-unsigned int locktimer = 0, unlocktimer = 0, energytimer = 0;
-uint8_t PollEVNode = NR_EVSES;
+unsigned int locktimer = 0, unlocktimer = 0;
 
 
     while(1)  // infinite loop
@@ -2134,9 +2133,25 @@ uint8_t PollEVNode = NR_EVSES;
             }
         }
 
-       
+        // Pause the task for 100ms
+        vTaskDelay(100 / portTICK_PERIOD_MS);
 
-        // Every 2 seconds, request measurements from modbus meters
+    } //while(1) loop
+
+}
+
+// Task that handles the Cable Lock and modbus
+// 
+// called every 200ms
+//
+void Timer200ms(void * parameter) {
+unsigned int energytimer = 0;
+uint8_t PollEVNode = NR_EVSES;
+
+    while(1)  // infinite loop
+    {       
+
+        // Every 4 seconds, request measurements from modbus meters
         if (ModbusRequest) {
             switch (ModbusRequest++) {                                          // State
                 case 1:                                                         // PV kwh meter
@@ -2256,8 +2271,8 @@ uint8_t PollEVNode = NR_EVSES;
         }
 
 
-        // Pause the task for 100ms
-        vTaskDelay(100 / portTICK_PERIOD_MS);
+        // Pause the task for 200ms
+        vTaskDelay(200 / portTICK_PERIOD_MS);
 
     } //while(1) loop
 
@@ -3308,7 +3323,7 @@ void ConfigureModbusMode(uint8_t newmode) {
             if (newmode != 255) MBserver.end();
             _LOG_A("ConfigureModbusMode2 task free ram: %u\n", uxTaskGetStackHighWaterMark( NULL ));
 
-            MBclient.setTimeout(100);       // timeout 100ms
+            MBclient.setTimeout(250);       // timeout 250ms
             MBclient.onDataHandler(&MBhandleData);
             MBclient.onErrorHandler(&MBhandleError);
 
@@ -4579,9 +4594,19 @@ void setup() {
     xTaskCreate(
         Timer100ms,     // Function that should be called
         "Timer100ms",   // Name of the task (for debugging)
-        4608,           // Stack size (bytes)
+        5120,           // Stack size (bytes)
         NULL,           // Parameter to pass
-        3,              // Task priority - medium
+        4,              // Task priority - medium-high
+        NULL            // Task handle
+    );
+
+    // Create Task 200ms Timer
+    xTaskCreate(
+        Timer200ms,     // Function that should be called
+        "Timer200ms",   // Name of the task (for debugging)
+        5120,           // Stack size (bytes)
+        NULL,           // Parameter to pass
+        4,              // Task priority - medium-high
         NULL            // Task handle
     );
 
@@ -4601,7 +4626,7 @@ void setup() {
     WiFiSetup();
 
     // Set eModbus LogLevel to 1, to suppress possible E5 errors
-    MBUlogLvl = LOG_LEVEL_CRITICAL;
+    MBUlogLvl = LOG_LEVEL_DEBUG;
     ConfigureModbusMode(255);
   
     BacklightTimer = BACKLIGHT;
