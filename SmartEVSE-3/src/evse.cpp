@@ -710,7 +710,7 @@ void setState(uint8_t NewState) {
 
 #ifdef MODEM
             if (DisconnectTimeCounter == -1){
-                DisconnectTimeCounter = 0;                                      // Start counting disconnect time. If longer than 60 seconds, throw DisconnectEvent
+                DisconnectTimeCounter = 0;                                      // Start counting disconnect time. If longer than 60 seconds, throw ResetEVState
             }
             break;
         case STATE_MODEM_REQUEST: // After overriding PWM, and resetting the safe state is 10% PWM. To make sure communication recovers after going to normal, we do this. Ugly and temporary
@@ -1610,11 +1610,9 @@ void RecomputeSoC(void) {
     // There's also the possibility an external API/app is used for SoC info. In such case, we allow setting ComputedSoC directly.
 }
 
-// EV disconnected from charger. Triggered after 60 seconds of disconnect
-// This is done so we can "re-plug" the car in the Modem process without triggering disconnect events
-void DisconnectEvent(void){
-    _LOG_A("EV disconnected for a while. Resetting SoC states");
-    ModemStage = 0; // Enable Modem states again
+// Function that clears (resets) all EV state related variables
+void ResetEVState(void){
+    _LOG_A("Resetting SoC states");
     InitialSoC = -1;
     FullSoC = -1;
     RemainingSoC = -1;
@@ -2616,6 +2614,7 @@ void Timer1S(void * parameter) {
         if (State == STATE_MODEM_REQUEST){
             if (ToModemWaitStateTimer) ToModemWaitStateTimer--;
             else{
+                ResetEVState();
                 setState(STATE_MODEM_WAIT);                                         // switch to state Modem 2
                 GLCD();
             }
@@ -2693,7 +2692,8 @@ void Timer1S(void * parameter) {
             pilot = Pilot();
             if (pilot == PILOT_12V){
                 DisconnectTimeCounter = -1;
-                DisconnectEvent();
+                ResetEVState();
+                ModemStage = 0; // Enable Modem states again
             } else{ // Run again
                 DisconnectTimeCounter = 0; 
             }
