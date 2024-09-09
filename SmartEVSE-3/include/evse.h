@@ -605,6 +605,11 @@ void ConfigureModbusMode(uint8_t newmode);
 void setMode(uint8_t NewMode) ;
 void handleWIFImode(void);
 
+#if MODEM
+void ResetModemState(void);
+void RecomputeSoC(void);
+#endif
+
 #if ENABLE_OCPP
 void ocppUpdateRfidReading(const unsigned char *uuid, size_t uuidLen);
 bool ocppIsConnectorPlugged();

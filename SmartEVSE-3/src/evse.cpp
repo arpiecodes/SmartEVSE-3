@@ -1978,13 +1978,10 @@ void RecomputeSoC(void) {
     }
     // There's also the possibility an external API/app is used for SoC info. In such case, we allow setting ComputedSoC directly.
 }
-#endif
 
-// EV disconnected from charger. Triggered after 60 seconds of disconnect
-// This is done so we can "re-plug" the car in the Modem process without triggering disconnect events
-void DisconnectEvent(void){
-    _LOG_A("EV disconnected for a while. Resetting SoC states");
-    ModemStage = 0; // Enable Modem states again
+// Method that resets all modem state related variables (upon plug disconnect or start of new modem session)
+void ResetModemState(void){
+    _LOG_A("Resetting Modem SoC states");
     InitialSoC = -1;
     FullSoC = -1;
     RemainingSoC = -1;
@@ -1994,6 +1991,7 @@ void DisconnectEvent(void){
     TimeUntilFull = -1;
     strncpy(EVCCID, "", sizeof(EVCCID));
 }
+#endif
 
 void CalcIsum(void) {
     phasesLastUpdate = time(NULL);
@@ -3109,6 +3107,7 @@ void Timer1S(void * parameter) {
         if (State == STATE_MODEM_REQUEST){
             if (ToModemWaitStateTimer) ToModemWaitStateTimer--;
             else{
+                ResetModemState();
                 setState(STATE_MODEM_WAIT);                                         // switch to state Modem 2
                 GLCD();
             }
@@ -3186,7 +3185,8 @@ void Timer1S(void * parameter) {
             pilot = Pilot();
             if (pilot == PILOT_12V){
                 DisconnectTimeCounter = -1;
-                DisconnectEvent();
+                ResetModemState();
+                ModemStage = 0;
             } else{ // Run again
                 DisconnectTimeCounter = 0; 
             }
