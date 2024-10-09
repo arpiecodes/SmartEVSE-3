@@ -1944,7 +1944,7 @@ void RecomputeSoC(void) {
             }
 
             RemainingSoC = ((FullSoC * EnergyRemaining) / TargetEnergyCapacity);
-            ComputedSoC = RemainingSoC > 1 ? (FullSoC - RemainingSoC) : FullSoC;
+            ComputedSoC = RemainingSoC > 1 ? (100 - RemainingSoC) : FullSoC;
 
             // Only attempt to compute the SoC and TimeUntilFull if we have a EnergyRemaining and PowerMeasured
             if (EnergyRemaining > -1) {
