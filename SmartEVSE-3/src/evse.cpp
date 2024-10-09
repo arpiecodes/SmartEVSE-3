@@ -1925,6 +1925,12 @@ void printStatus(void)
 // Recompute State of Charge, in case we have a known initial state of charge
 // This function is called by kWh logic and after an EV state update through API, Serial or MQTT
 void RecomputeSoC(void) {
+    if (EVMeter.Type) {
+        // We cannot compute SoC if we have no EVMeter to get the Energy Charged
+        // We don't reset any values as they could come from API
+        return;
+    }
+
     if (InitialSoC > 0 && FullSoC > 0 && EnergyCapacity > 0) {
         if (InitialSoC == FullSoC) {
             // We're already at full SoC
@@ -1949,11 +1955,12 @@ void RecomputeSoC(void) {
             // Only attempt to compute the SoC and TimeUntilFull if we have a EnergyRemaining and PowerMeasured
             if (EnergyRemaining > -1) {
                 int TimeToGo = -1;
+
                 // Do a very simple estimation in seconds until car would reach FullSoC according to current charging power
-                if (EVMeter.PowerMeasured > 0) {
+                if (EVMeter.PowerMeasured > 50) {
                     // Use real-time PowerMeasured data if available
                     TimeToGo = (3600 * EnergyRemaining) / EVMeter.PowerMeasured;
-                } else if (Nr_Of_Phases_Charging > 0) {
+                } else if (!EVMeter.PowerMeasured && Nr_Of_Phases_Charging > 0) {
                     // Else, fall back on the theoretical maximum of the cable + nr of phases
                     TimeToGo = (3600 * EnergyRemaining) / (MaxCapacity * (Nr_Of_Phases_Charging * 230));
                 }
